@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function teacher() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    function owner(teamId) { return signedIn() && request.auth.uid == teamId; }
+
+    match /admins/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || teacher());
+      allow list: if teacher();
+      // Only Firebase Console / privileged Admin SDK may provision teachers.
+      allow create, update, delete: if false;
+    }
+    match /teams/{teamId} {
+      allow get, list: if owner(teamId) || teacher();
+      allow create: if owner(teamId)
+        && request.resource.data.keys().hasOnly(['name','updatedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 40;
+      allow update: if teacher() || (owner(teamId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','updatedAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 40);
+      allow delete: if teacher();
+      match /submissions/{taskId} {
+        allow get, list: if owner(teamId) || teacher();
+        allow create: if owner(teamId)
+          && request.resource.data.keys().hasOnly(['answer','selection','timerSeconds','updatedAt','status'])
+          && request.resource.data.status == 'submitted'
+          && request.resource.data.answer is string
+          && request.resource.data.answer.size() <= 3000;
+        allow update: if teacher() || (owner(teamId)
+          && resource.data.status != 'approved'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answer','selection','timerSeconds','updatedAt','status'])
+          && request.resource.data.status == 'submitted'
+          && request.resource.data.answer is string
+          && request.resource.data.answer.size() <= 3000);
+        allow delete: if teacher();
+      }
+    }
+    // Answers are NEVER publicly readable. The current version uses teacher review.
+    match /answerKeys/{taskId} {
+      allow read, write: if teacher();
+    }
+  }
+}

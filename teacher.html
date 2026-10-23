@@ -1,0 +1,50 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI共和國｜教師後台</title><style>body{margin:0;min-height:100vh;background:linear-gradient(130deg,#07142d,#17345c);color:#f1f7ff;font:16px/1.6 -apple-system,"Noto Sans TC",sans-serif}.wrap{max-width:1050px;margin:auto;padding:24px 16px}.card{border:1px solid #496792;background:#112744;border-radius:17px;padding:18px;margin:15px 0}button{cursor:pointer;font:inherit;border:0;border-radius:9px;background:#69d7ff;color:#062445;padding:9px 14px;font-weight:700}button.ghost{background:#23496f;color:#fff}a{color:#a9eeff}h1{margin:8px 0}h2{font-size:20px}.muted{color:#b0c9e1}.entry{padding:14px;border:1px solid #425b83;border-radius:10px;margin:12px 0;background:#0b1b35}.answer{white-space:pre-wrap;word-break:break-word;padding:9px;background:#07152d;border-radius:7px}section{margin:12px 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.status{border-radius:14px;background:#304e6b;padding:2px 9px;font-size:13px}</style></head><body><main class="wrap"><a href="./">← 返回學生遊戲</a><h1>🛡 AI共和國・教師後台</h1><p class="muted">只允許已在 Firestore /admins/{教師 UID} 登記的教師查看與審核。</p><div id="alert" class="card">正在檢查 Firebase 設定…</div><div class="row"><button id="login" hidden>使用 Google 登入教師帳號</button><button id="logout" hidden class="ghost">登出</button><button id="refresh" hidden class="ghost">重新整理進度</button></div><div id="teams"></div></main><script type="module">
+import {firebaseConfig} from "./firebase-config.js";
+const alertEl=document.getElementById("alert"),teamsEl=document.getElementById("teams");
+const msg=t=>alertEl.textContent=t,esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+if(!firebaseConfig?.apiKey||!firebaseConfig?.projectId){msg("Firebase 尚未連接；請先填寫 firebase-config.js，並啟用 Google Authentication、Cloud Firestore 及安全規則。");}
+else {
+ try {
+ const sdk="https://www.gstatic.com/firebasejs/12.18.0/";
+ const [{initializeApp},{getAuth,GoogleAuthProvider,onAuthStateChanged,signInWithPopup,signInWithRedirect,getRedirectResult,signOut},{getFirestore,collection,getDocs,doc,getDoc,updateDoc,serverTimestamp}]=await Promise.all([import(sdk+"firebase-app.js"),import(sdk+"firebase-auth.js"),import(sdk+"firebase-firestore.js")]);
+ const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
+ let authorised=false;
+ const login=document.getElementById("login"),logout=document.getElementById("logout"),refresh=document.getElementById("refresh");
+ login.hidden=false;
+ login.onclick=async()=>{try{await signInWithPopup(auth,new GoogleAuthProvider())}catch(e){if(e.code==="auth/popup-blocked"||e.code==="auth/cancelled-popup-request")await signInWithRedirect(auth,new GoogleAuthProvider());else msg("Google 登入失敗："+e.message)}};
+ logout.onclick=async()=>{await signOut(auth);teamsEl.innerHTML="";authorised=false};
+ refresh.onclick=()=>renderTeams();
+ try{await getRedirectResult(auth)}catch(e){msg("登入轉址異常："+e.message)}
+ onAuthStateChanged(auth,async user=>{
+  if(!user||user.isAnonymous){msg("請點選 Google 登入，使用已授權的教師帳號。");login.hidden=false;logout.hidden=true;refresh.hidden=true;teamsEl.innerHTML="";return}
+  try {const adm=await getDoc(doc(db,"admins",user.uid));
+   if(!adm.exists()){msg("帳號尚無教師權限。請到 Firebase Console 的 Firestore /admins/"+user.uid+" 建立文件，才可審核。");login.hidden=true;logout.hidden=false;refresh.hidden=true;return}
+   authorised=true;login.hidden=true;logout.hidden=false;refresh.hidden=false;msg("✓ 教師已登入："+(user.email||"授權帳號"));await renderTeams();
+  }catch(e){msg("無法讀取教師權限："+e.message);}
+ });
+ async function renderTeams(){
+  if(!authorised)return;msg("正在讀取小隊進度…");
+  try{
+   const snaps=await getDocs(collection(db,"teams"));let html="";
+   for(const teamDoc of snaps.docs){
+     const info=teamDoc.data(),sub=await getDocs(collection(db,"teams",teamDoc.id,"submissions"));
+     const approved=sub.docs.filter(x=>x.data().status==="approved").length;
+     let lines="";
+     for(const s of sub.docs){
+       const d=s.data(),id=JSON.stringify(teamDoc.id),task=JSON.stringify(s.id);
+       lines+='<div class="entry"><div class="row"><b>'+esc(s.id)+'</b><span class="status">'+esc(d.status||"")+'</span></div><p class="answer">'+esc(d.answer)+'</p><div class="row"><button data-team="'+esc(teamDoc.id)+'" data-task="'+esc(s.id)+'" data-verdict="approved">✓ 通過</button><button class="ghost" data-team="'+esc(teamDoc.id)+'" data-task="'+esc(s.id)+'" data-verdict="returned">↩ 請重新作答</button></div></div>';
+     }
+     html+='<section class="card"><h2>🚀 '+esc(info.name||"未命名小隊")+'</h2><p class="muted">已送出 '+sub.size+'/31 題 · 教師通過 '+approved+'/31 題</p>'+(lines||"<p>尚無提交紀錄</p>")+'</section>';
+   }
+   teamsEl.innerHTML=html||'<div class="card">尚無小隊資料，請先讓學生建立小隊並作答。</div>';
+   teamsEl.querySelectorAll("[data-verdict]").forEach(b=>b.onclick=async()=>{
+     b.disabled=true;
+     try {await updateDoc(doc(db,"teams",b.dataset.team,"submissions",b.dataset.task),{status:b.dataset.verdict,reviewedAt:serverTimestamp()});await renderTeams();}
+     catch(e){b.disabled=false;msg("審核失敗："+e.message)}
+   });
+   msg("✓ 已載入全部小隊資料，只有教師可審核");
+  }catch(e){msg("讀取失敗："+e.message)}
+ }
+ }catch(e){msg("Firebase 初始化失敗："+e.message)}
+}
+</script></body></html>
