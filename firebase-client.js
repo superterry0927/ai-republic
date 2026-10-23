@@ -12,6 +12,7 @@ if (firebaseConfig?.apiKey && firebaseConfig?.projectId && firebaseConfig?.appId
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app), db = getFirestore(app);
     let uid = null, pending = null, debounceId = 0, saving = false;
+    const teacherApproved = new Set();
     const queue = (state) => { pending = JSON.parse(JSON.stringify(state)); clearTimeout(debounceId); debounceId = setTimeout(flush, 650); };
     window.aiRepublicCloudSave = queue;
     async function flush() {
@@ -21,7 +22,7 @@ if (firebaseConfig?.apiKey && firebaseConfig?.projectId && firebaseConfig?.appId
         await setDoc(doc(db,"teams",uid),{name:String(snapshot.group||"未命名小隊").slice(0,40),updatedAt:serverTimestamp()},{merge:true});
         for (const [taskId,a] of Object.entries(snapshot.answers||{})) {
           if(!/^(?:[1-5]-[1-6]|FINAL)$/.test(taskId) || !a || !String(a.answer||"").trim()) continue;
-          if(a.status === "done") continue;
+          if(a.status === "done" || teacherApproved.has(taskId)) continue;
           await setDoc(doc(db,"teams",uid,"submissions",taskId),{
             answer:String(a.answer||"").slice(0,3000),
             selection:String(a.selection||"").slice(0,50),
@@ -44,6 +45,8 @@ if (firebaseConfig?.apiKey && firebaseConfig?.projectId && firebaseConfig?.appId
             const local=JSON.parse(localStorage.getItem("ai-republic-preview-v1")||"{}");
             local.answers=local.answers||{};let changed=false;
             for(const item of snap.docs){
+              if(item.data().status==="approved") teacherApproved.add(item.id);
+              else teacherApproved.delete(item.id);
               const a=local.answers[item.id];if(!a)continue;
               const status=item.data().status==="approved"?"done":item.data().status==="returned"?"retry":null;
               if(status&&a.status!==status){a.status=status;changed=true;}
